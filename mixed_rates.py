@@ -45,7 +45,7 @@ def calculate_mixed_occupation_rates(df_wide, df_long, rate_type, top_n=200):
     results = pd.DataFrame(index=df_wide.index)
     results.index.name = 'occ_code'
     
-    # Calculate mean and last (2023) rates for all occupations
+    # Calculate mean and last (2023) rates for all occupations (handling NaNs)
     occ_stats = (
         df_long.groupby('occ_code')[rate_column]
         .agg(['mean', 'count'])
@@ -57,17 +57,10 @@ def calculate_mixed_occupation_rates(df_wide, df_long, rate_type, top_n=200):
     if df_2023.empty:
         raise ValueError("No data found for year 2023")
     
-    # Check for missing 2023 data
-    missing_2023 = set(df_wide.index) - set(df_2023.index)
-    if missing_2023:
-        raise ValueError(f"Missing 2023 data for occupations: {sorted(list(missing_2023))}")
-    
+    # Don't raise error for missing 2023 data, let NaNs handle it
     occ_stats[f'{rate_type}_2023'] = df_2023
     
-    # Check for occupations with no data
-    missing_data = set(df_wide.index) - set(occ_stats.index)
-    if missing_data:
-        raise ValueError(f"No rate data found for occupations: {sorted(list(missing_data))}")
+    # Don't raise error for missing data, let NaNs handle it
     
     # Merge with results
     results = results.join(occ_stats, how='left')
@@ -80,17 +73,30 @@ def calculate_mixed_occupation_rates(df_wide, df_long, rate_type, top_n=200):
     # Merge employment weights
     results = results.join(df_wide[['max_emp']], how='left')
     
-    # Calculate 2-digit job family aggregates (weighted by max_emp)
+    # Calculate 2-digit job family aggregates (weighted by max_emp, handling zeros and NaNs)
     family_2d_stats = []
     for family in results['job_family_2d'].unique():
         family_occs = results[results['job_family_2d'] == family]
         if len(family_occs) == 0:
             continue
             
+        # Filter out zero weights and NaN values
+        valid_mask = (family_occs['max_emp'] > 0) & family_occs[f'{rate_type}_mean'].notna()
+        valid_occs_mean = family_occs[valid_mask]
+        
+        valid_mask_2023 = (family_occs['max_emp'] > 0) & family_occs[f'{rate_type}_2023'].notna()
+        valid_occs_2023 = family_occs[valid_mask_2023]
+        
+        if len(valid_occs_mean) == 0:
+            raise ValueError(f"No valid data for 2-digit family {family} mean calculation")
+        if len(valid_occs_2023) == 0:
+            raise ValueError(f"No valid data for 2-digit family {family} 2023 calculation")
+            
         # Weighted mean calculation
-        weights = family_occs['max_emp']
-        mean_weighted = np.average(family_occs[f'{rate_type}_mean'], weights=weights)
-        rate_2023_weighted = np.average(family_occs[f'{rate_type}_2023'], weights=weights)
+        weights_mean = valid_occs_mean['max_emp']
+        weights_2023 = valid_occs_2023['max_emp']
+        mean_weighted = np.average(valid_occs_mean[f'{rate_type}_mean'], weights=weights_mean)
+        rate_2023_weighted = np.average(valid_occs_2023[f'{rate_type}_2023'], weights=weights_2023)
         
         family_2d_stats.append({
             'job_family_2d': family,
@@ -101,17 +107,30 @@ def calculate_mixed_occupation_rates(df_wide, df_long, rate_type, top_n=200):
     family_2d_df = pd.DataFrame(family_2d_stats).set_index('job_family_2d')
     results = results.join(family_2d_df, on='job_family_2d', how='left')
     
-    # Calculate 1-digit job family aggregates (weighted by max_emp)
+    # Calculate 1-digit job family aggregates (weighted by max_emp, handling zeros and NaNs)
     family_1d_stats = []
     for family in results['job_family_1d'].unique():
         family_occs = results[results['job_family_1d'] == family]
         if len(family_occs) == 0:
             continue
             
+        # Filter out zero weights and NaN values
+        valid_mask = (family_occs['max_emp'] > 0) & family_occs[f'{rate_type}_mean'].notna()
+        valid_occs_mean = family_occs[valid_mask]
+        
+        valid_mask_2023 = (family_occs['max_emp'] > 0) & family_occs[f'{rate_type}_2023'].notna()
+        valid_occs_2023 = family_occs[valid_mask_2023]
+        
+        if len(valid_occs_mean) == 0:
+            raise ValueError(f"No valid data for 1-digit family {family} mean calculation")
+        if len(valid_occs_2023) == 0:
+            raise ValueError(f"No valid data for 1-digit family {family} 2023 calculation")
+            
         # Weighted mean calculation
-        weights = family_occs['max_emp']
-        mean_weighted = np.average(family_occs[f'{rate_type}_mean'], weights=weights)
-        rate_2023_weighted = np.average(family_occs[f'{rate_type}_2023'], weights=weights)
+        weights_mean = valid_occs_mean['max_emp']
+        weights_2023 = valid_occs_2023['max_emp']
+        mean_weighted = np.average(valid_occs_mean[f'{rate_type}_mean'], weights=weights_mean)
+        rate_2023_weighted = np.average(valid_occs_2023[f'{rate_type}_2023'], weights=weights_2023)
         
         family_1d_stats.append({
             'job_family_1d': family,
@@ -122,7 +141,7 @@ def calculate_mixed_occupation_rates(df_wide, df_long, rate_type, top_n=200):
     family_1d_df = pd.DataFrame(family_1d_stats).set_index('job_family_1d')
     results = results.join(family_1d_df, on='job_family_1d', how='left')
     
-    # Check for missing aggregates
+    # Check for missing aggregates (should still error if entire families missing)
     missing_2d = results[results[f'{rate_type}_mean_2d'].isna()]['job_family_2d'].unique()
     if len(missing_2d) > 0:
         raise ValueError(f"Missing 2-digit aggregates for families: {list(missing_2d)}")
